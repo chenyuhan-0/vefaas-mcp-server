@@ -1,6 +1,6 @@
 import fnmatch
 import io
-from typing import Union, Optional, List
+from typing import Required, Union, Optional, List
 import datetime
 import volcenginesdkcore
 import volcenginesdkvefaas
@@ -61,6 +61,29 @@ def validate_and_set_region(region: str = None) -> str:
     else:
         region = "cn-beijing"
     return region
+
+@mcp.tool(description="""Get veFaaS function information.
+
+Use this to get function details.
+
+Params: function_id (required) - the ID of the function to query.
+""")
+def get_function_detail(function_id: Required[str], region: Optional[str] = None):
+    """Get function information to check if it exists."""
+    region = validate_and_set_region(region)
+    
+    api_instance = init_client(region, mcp.get_context())
+    
+    req = volcenginesdkvefaas.GetFunctionRequest(id=function_id)
+    
+    try:
+        response = api_instance.get_function(req)
+        return response
+    except ApiException as e:
+        if "not found" in str(e).lower() or "does not exist" in str(e).lower():
+            raise ValueError(f"Function {function_id} does not exist in region {region}")
+        else:
+            raise ValueError(f"Failed to get function: {str(e)}")
 
 @mcp.tool(description="""Create a veFaaS function.
 
@@ -528,7 +551,7 @@ def create_api_gateway(name: str = None, region: str = "cn-beijing") -> str:
 @mcp.tool(description="""Create a VeApig gateway service (one per public domain).
 
 - Requires an existing Running gateway (`gateway_id`). Gateway region defaults to `cn-beijing`; also supports `ap-southeast-1`, `cn-shanghai`, `cn-guangzhou`.
-- Provide `name` to control the service name; otherwise a random value is used. Always reuse an existing Running gateway and add services per function/domain.
+- Provide `name` to control the service name, the provided name **must** with a random suffix; otherwise a random value is used. Always reuse an existing Running gateway and add services per function/domain.
 - Returns the raw creation response plus a follow-up `GetGatewayService` result so you can capture the service ID and domain. After binding routes (`create_api_gateway_trigger`), reuse those details when presenting the public URL.
 """)
 def create_api_gateway_service(
@@ -709,9 +732,9 @@ def _get_upload_code_description() -> str:
         "Returns:\n"
         "- 'code_upload_callback'\n"
         "- 'dependency': {dependency_task_created, should_check_dependency_status, skip_reason?}\n\n"
-        "Tips:\n"
-        "- For compiled languages like Golang or C++, you **must** build the executable binary on your local machine *before* uploading. The upload should contain the compiled binary.\n"
-        "- Startup scripts for compiled languages (e.g., Golang) must **not** contain build commands (e.g., `go build`). They should directly execute the pre-built executable.\n"
+        "Tips:(**must** check before upload):\n"
+        "- **CRITICAL for Golang/C++/other compiled languages**: veFaaS **CANNOT** compile code. You **MUST** compile a Linux-compatible binary locally and upload it with all the source code.\n"
+        "- The startup script (e.g., `run.sh`) **MUST** execute this pre-compiled binary directly and **MUST NOT** contain any build commands (e.g., `go build`).\n"
         "- Python/Node deps: put them in 'requirements.txt'/'package.json'; veFaaS installs them as needed.\n"
         "- When uploading code, exclude local deps and noise (e.g., `.venv`, `site-packages`, `node_modules`, `.git`, build artifacts) via `local_folder_exclude`.\n\n"
     )
@@ -982,6 +1005,71 @@ def build_zip_bytes_for_file_dict(file_dict):
     zip_bytes = zip_buffer.getvalue()
     return zip_bytes
 
+@mcp.tool(description="""Get vefaas function code download link.
+
+Tips:
+ - When user want to download vefaas function code, model can use this tool to get the download link.
+ - Model auto download the code zip file from the link and unzip to user local.
+
+Params:
+- function_id (required): the ID of the function
+- region (optional): deployment region, defaults to cn-beijing
+- revision_number (optional): User can specific revision number to download.
+- use_stable_revision default False. Only when user ask the online/released/stable revision code, set use_stable_revision to True.
+
+Returns: success message with target revision number
+""")
+def get_function_code_download_link(function_id: str, region: Optional[str] = None, revision_number: Optional[int] = None, use_stable_revision: bool = False):
+    """Download function code from veFaaS and extract to local directory."""
+    region = validate_and_set_region(region)
+    
+    # First check if function exists
+    try:
+        function_detail = get_function_detail(function_id, region)
+        logger.info(f"Function {function_id} found in region {region}")
+    except Exception as e:
+        raise ValueError(f"Function {function_id} not found in region {region}: {str(e)}")
+    
+    # Determine which revision number to use
+    target_revision = None
+    if revision_number is not None:
+        target_revision = revision_number
+    elif use_stable_revision:
+        # Get stable revision number from release status
+        try:
+            release_status = get_function_release_status(function_id, region)
+            if release_status.stable_revision_number is not None:
+                target_revision = release_status.stable_revision_number
+                logger.info(f"Using stable revision number: {target_revision}")
+        except Exception as e:
+            raise ValueError(f"Failed to get stable revision number: {str(e)}")
+    
+    if target_revision is None:
+        target_revision = 0
+
+    # Get revision information
+    try:
+        revision_info = get_function_revision(function_id, region, target_revision)
+        logger.info(f"Revision {target_revision} information retrieved")
+    except Exception as e:
+        raise ValueError(f"Failed to get revision {target_revision} information: {str(e)}")
+    
+    # Extract source_location from revision info
+    source_location = None
+    try:
+        source_location = revision_info.source_location
+        if source_location is None or source_location == "":
+            raise ValueError("Could not find source_location in revision information")
+
+        logger.info(f"Source location: {source_location}")
+        return json.dumps({
+            "function_id": function_id,
+            "revision": target_revision,
+            "source_location": source_location,
+            })
+    except Exception as e:
+        raise ValueError(f"Failed to extract source location: {str(e)}")
+
 @mcp.tool(description="""Lists available vefaas function templates. Use this to find template names for a specific 'runtime'.
 The returned names are required to fetch template source code using the 'get_template' tool.
     This is a good first step for generating or debugging vefaas functions.
@@ -1015,7 +1103,9 @@ When to use:
 - To generate new vefaas function code: Analyze the template to understand the required file structure, dependencies, and code style.
 - To debug a failing deployment: Compare your code with a working template to identify errors in configuration, dependencies, or implementation.
 
-Note: The tool returns the template content directly. Do not save it to a local file unless the user explicitly asks.
+Note: 
+- The tool returns the template content directly. Do not save it to a local file unless the user explicitly asks.
+- Never save the template.zip file. If you need to save the code, extract the files from the zip archive.
 """)
 def get_template(template_name: str):
     try:
@@ -1036,3 +1126,28 @@ def get_template(template_name: str):
 
 
     return resp
+
+# Get function revision information from veFaaS.
+# Use this to retrieve revision information for a veFaaS function. This function returns the revision details
+# Params:
+# - function_id (required): the ID of the function
+# - region (optional): deployment region, defaults to cn-beijing
+# - revision_number (optional): specific revision number to query. If not provided, defaults to version 0.
+def get_function_revision(function_id: Required[str], region: Optional[str] = "", revision_number: Optional[int] = None):
+
+    region = validate_and_set_region(region)
+
+    api_instance = init_client(region, mcp.get_context())
+
+    req = volcenginesdkvefaas.GetRevisionRequest(
+        function_id=function_id,
+        revision_number=revision_number,
+    )
+
+    try:
+        revision_resp = api_instance.get_revision(req)
+        logger.debug("GetRevision response: %s", revision_resp)
+        return revision_resp
+    except Exception as e:
+        raise ValueError(f"Failed to get function revision: {str(e)}")
+
