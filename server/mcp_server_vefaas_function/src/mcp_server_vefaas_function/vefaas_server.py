@@ -122,6 +122,8 @@ Args:
 Note:
  - After release succeed, start poll `get_vefaas_application` tool to check application deployment status.
  - If release failed, let user check the error log from `get_vefaas_application`.
+ - Provide veFaaS application link after all steps done:
+    - veFaaS Application link: https://console.volcengine.com/vefaas/region:vefaas+`region`/application/detail/`application_id`?tab=detail
 
 **CRITICAL REQUIREMENT**
   - Stop poll `get_vefaas_application` tool when deploy_success or deploy_fail
@@ -242,7 +244,11 @@ Error Handle Tips:
  - Before create function, check whether there is vefaas.yml exist, if it does, use the validate function_id in it and SKIP create_function.
  - After function created success:
     - Create and Edit vefaas.yml: add `function_id`, `name`, `region`, `runtime`, `command` to file immediately once function created.
-    - Start `upload code` -> `release function` -> `create a api gateway trigger` -> `create a application`. (do if pre step success)
+    - **Do follow steps sequentially**:
+     - 1. Upload code to veFaaS function. (Do If source is TOS object)
+     - 2. Release function, if user need release/deploy function and upload_code done.
+     - 3. Create a api gateway trigger if function create and release success.
+     - 4. Create and release an vefaas Application if function created/released succeed and api_gateway_trigger created succeed.
 
 """)
 def create_function(name: str = None, region: str = None, runtime: str = None, command: str = None, source: str = None,
@@ -442,6 +448,8 @@ Args:
 
 Note:
  - This tool only submits the release job; it does **not** mean the function is live or releaseing finished
+ - Provide veFaaS function link after all steps done:
+    - veFaaS link: https://console.volcengine.com/vefaas/region:vefaas+`region`/function/detail/`function_id`?tab=config
 
 **CRITICAL REQUIREMENT**:
 - Call this tool when function code or config has been updated.
@@ -1255,22 +1263,17 @@ def get_function_detail(function_id: str, region: Optional[str] = None):
         else:
             raise ValueError(f"Failed to get function: {str(e)}")
 
-@mcp.tool(description="""Download function code for veFaaS function. Only get the Resource Link.
+@mcp.tool(description="""Download function code for veFaaS function.
 
 Args:
  - function_id (required): the ID of the function
  - revision_number (optional): specific code revision number to query. If not provided, defaults to version 0.
  - use_stable_revision (optional): default False. Only when user ask the online/released/stable revision code set use_stable_revision to True.
+ - dest_dir: the path where the code to download and unzip. default is local opened path.
 
-Note:
- - Use the returned 'source_location' to download the code and unzip to dest_path. If dest path not provided, unzip to lcoal path.
- - Not save the zip file in local unless user ask to save.
-
-Return:
- - 'source_location' (raw API response)
 
 """)
-def pull_function_code(function_id: str, region: Optional[str] = "", revision_number: Optional[int] = None, use_stable_revision: Optional[bool] = False):
+def pull_function_code(function_id: str, region: Optional[str] = "", dest_dir: str = None, revision_number: Optional[int] = None, use_stable_revision: Optional[bool] = False):
     region = validate_and_set_region(region)
     
     # First check if function exists
@@ -1313,6 +1316,17 @@ def pull_function_code(function_id: str, region: Optional[str] = "", revision_nu
 
         logger.info(f"Source location: {source_location}")
 
+        # Download the code zip file
+        response = requests.get(source_location)
+        response.raise_for_status()
+
+        # Create destination directory if it doesn't exist
+        os.makedirs(dest_dir, exist_ok=True)
+
+        # Unzip the file
+        with zipfile.ZipFile(io.BytesIO(response.content)) as zip_ref:
+            zip_ref.extractall(dest_dir)
+
         # generate vefaas.yml
         vefaas_yml_path = os.path.join(dest_dir, "vefaas.yml")
         try:
@@ -1323,6 +1337,7 @@ def pull_function_code(function_id: str, region: Optional[str] = "", revision_nu
                 f.write(f"name: {function_detail.name}\n")
                 f.write(f"region: {region}\n")
                 f.write(f"runtime: {function_detail.runtime}\n")
+                f.write(f"command: {function_detail.command}\n")
                 f.write(f"triggers:\n")
                 for trigger in triggers:
                     f.write(f"  - id: {trigger.get('Id', '')}\n")
