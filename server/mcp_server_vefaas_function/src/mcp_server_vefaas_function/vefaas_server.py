@@ -122,7 +122,7 @@ Args:
 Note:
  - After release succeed, start poll `get_vefaas_application` tool to check application deployment status.
  - If release failed, let user check the error log from `get_vefaas_application`.
- - Provide veFaaS application link after all steps done:
+ - Provide veFaaS Application link if can get application_id, otherwise do nothing.:
     - veFaaS Application link: https://console.volcengine.com/vefaas/region:vefaas+`region`/application/detail/`application_id`?tab=detail
 
 **CRITICAL REQUIREMENT**
@@ -448,7 +448,7 @@ Args:
 
 Note:
  - This tool only submits the release job; it does **not** mean the function is live or releaseing finished
- - Provide veFaaS function link after all steps done:
+ - Provide veFaaS function link if can get function_id, otherwise do nothing.:
     - veFaaS link: https://console.volcengine.com/vefaas/region:vefaas+`region`/function/detail/`function_id`?tab=config
 
 **CRITICAL REQUIREMENT**:
@@ -1356,12 +1356,6 @@ def pull_function_code(function_id: str, region: Optional[str] = "", dest_dir: s
     except Exception as e:
         raise ValueError(f"Failed to download and extract function code: {str(e)}")
 
-@mcp.tool(description="""List veFaaS function triggers.
-
-Args:
- - function_id (required): the ID of the function
-
-""")
 def list_function_triggers(function_id: str, region: Optional[str] = None):
     region = validate_and_set_region(region)
 
@@ -1382,7 +1376,6 @@ def list_function_triggers(function_id: str, region: Optional[str] = None):
         return response
     except Exception as e:
         raise ValueError(f"Failed to list function triggers: {str(e)}")
-
 
 @mcp.tool(description="""List veFaaS function templates.
 
